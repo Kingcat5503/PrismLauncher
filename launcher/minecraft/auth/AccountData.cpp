@@ -278,7 +278,6 @@ bool entitlementFromJSONV3(const QJsonObject& parent, MinecraftEntitlement& out)
 }
 
 }  // namespace
-
 bool AccountData::resumeStateFromV3(QJsonObject data)
 {
     auto typeV = data.value("type");
@@ -286,6 +285,7 @@ bool AccountData::resumeStateFromV3(QJsonObject data)
         qWarning() << "Failed to parse account data: type is missing.";
         return false;
     }
+
     auto typeS = typeV.toString();
     if (typeS == "MSA") {
         type = AccountType::MSA;
@@ -300,24 +300,45 @@ bool AccountData::resumeStateFromV3(QJsonObject data)
         auto clientIDV = data.value("msa-client-id");
         if (clientIDV.isString()) {
             msaClientID = clientIDV.toString();
-        }  // leave msaClientID empty if it doesn't exist or isn't a string
+        }
+
         msaToken = tokenFromJSONV3(data, "msa");
         userToken = tokenFromJSONV3(data, "utoken");
         mojangservicesToken = tokenFromJSONV3(data, "xrp-mc");
     }
 
     yggdrasilToken = tokenFromJSONV3(data, "ygg");
-    // versions before 7.2 used "offline" as the offline token
+
+    // Fix legacy offline token
     if (yggdrasilToken.token == "offline")
         yggdrasilToken.token = "0";
 
     minecraftProfile = profileFromJSONV3(data, "profile");
+
+    // Default entitlement handling
     if (!entitlementFromJSONV3(data, minecraftEntitlement)) {
         if (minecraftProfile.validity != Validity::None) {
             minecraftEntitlement.canPlayMinecraft = true;
             minecraftEntitlement.ownsMinecraft = true;
             minecraftEntitlement.validity = Validity::Assumed;
         }
+    }
+
+    // 🔥 IMPORTANT FIX: force offline accounts to be valid & playable
+    if (type == AccountType::Offline) {
+        minecraftEntitlement.canPlayMinecraft = true;
+        minecraftEntitlement.ownsMinecraft = true;
+        minecraftEntitlement.validity = Validity::Assumed;
+
+        // ensure profile exists (prevents demo mode)
+        if (minecraftProfile.name.isEmpty()) {
+            minecraftProfile.name = "Player";
+        }
+        if (minecraftProfile.id.isEmpty()) {
+            minecraftProfile.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        }
+
+        minecraftProfile.validity = Validity::Assumed;
     }
 
     validity_ = minecraftProfile.validity;
@@ -345,6 +366,8 @@ QJsonObject AccountData::saveState() const
 
 QString AccountData::accessToken() const
 {
+    if (type == AccountType::Offline)
+        return "0"; // dummy token for offline mode
     return yggdrasilToken.token;
 }
 
@@ -355,10 +378,14 @@ QString AccountData::profileId() const
 
 QString AccountData::profileName() const
 {
+    if (type == AccountType::Offline) {
+        if (minecraftProfile.name.isEmpty())
+            return "Player";
+        return minecraftProfile.name;
+    }
     if (minecraftProfile.name.size() == 0) {
         return QObject::tr("No Minecraft profile");
     }
-
     return minecraftProfile.name;
 }
 
